@@ -14,6 +14,13 @@ const EDGE_HEAD_WIDTH = 0.015;
 const EDGE_HEAD_LENGTH = 0.035;
 const EDGE_COLOR = [1.0, 1.0, 1.0];
 
+// Layout processor command and result codes
+const CMD_INITIALIZE_LAYOUT = 0;
+const CMD_OPTIMIZE_LAYOUT = 1;
+const RES_INITIAL_LAYOUT = 0;
+const RES_UPDATED_LAYOUT = 1;
+
+// Node mesh vertices
 const nodeGeometry = new Float32Array([
      0.000000,  0.000000,
      1.000000,  0.000000,
@@ -81,6 +88,7 @@ const nodeGeometry = new Float32Array([
      1.000000,  0.000000
 ]);
 
+// Edge mesh vertices
 const edgeGeometry = new Float32Array([
     -1.00,  0.50,
     -1.00, -0.50,
@@ -103,80 +111,82 @@ var graphPosX = 0.0;
 var graphPosY = 0.0;
 var graphScale = 1.0;
 
-class ShaderProgram {
-    constructor(gl, name, shaders, uniforms, attribs) {
-        this.context = gl;
-        this.program = gl.createProgram();
-        this.uniforms = {};
-        this.attribs = {};
+var canvas, gl; // Canvas element and WebGL context
+var shaderInfo, shaderLinks; // Shader JSON data
+var nodeDrawingProgram, edgeDrawingProgram; // Compiled GLSL programs
+var layoutProcessor; // Graph layout processing WebWorker
 
-        var compiledShaders = [];
-        for (var desc of shaders) {
-            var shader = gl.createShader(desc.type);
-            gl.shaderSource(shader, desc.code);
-            gl.compileShader(shader);
-            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-                // Debug compilation errors and dispose of this shader
-                console.log(name + ":" + desc.name + ":" + gl.getShaderInfoLog(shader));
-                gl.deleteShader(shader);
-            } else {
-                gl.attachShader(this.program, shader);
-                compiledShaders.push(shader);
-            }
-        }
+var nodeGeometryBuffer;
+var nodePositionBuffer;
+var nodeColorBuffer;
+var edgeGeometryBuffer;
+var edgePositionBuffer;
 
-        gl.linkProgram(this.program);
-        if (compiledShaders.length != shaders.length || !gl.getProgramParameter(this.program, gl.LINK_STATUS)) {
-            // Failed to compile some shaders and/or failed to link program
-            // Make sure to clean everything up
-            gl.deleteProgram(this.program);
-            for (var shader of compiledShaders) gl.deleteShader(shader);
-            this.program = null;
+function compileProgram(gl, name, shaders, uniforms, attribs) {
+    var program = gl.createProgram();
+    var uniformLocs = {};
+    var attribLocs = {};
+
+    var compiledShaders = [];
+    for (var desc of shaders) {
+        var shader = gl.createShader(desc.type);
+        gl.shaderSource(shader, desc.code);
+        gl.compileShader(shader);
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+            // Debug compilation errors and dispose of this shader
+            console.log(name + ":" + desc.name + ":" + gl.getShaderInfoLog(shader));
+            gl.deleteShader(shader);
         } else {
-            var foundAllLocs = true;
-
-            // Cache uniform locations
-            for (var uniform of uniforms) {
-                if ((this.uniforms[uniform] = gl.getUniformLocation(this.program, uniform)) == null) {
-                    // Uniform could not be located
-                    console.log(name + ":ERROR: uniform \"" + uniform + "\" not found");
-                    foundAllLocs = false;
-                }
-            }
-
-            // Cache attribute locations
-            for (var attrib of attribs) {
-                if ((this.attribs[attrib] = gl.getAttribLocation(this.program, attrib)) < 0) {
-                    // Attribute could not be located
-                    console.log(name + ":ERROR: attribute \"" + attrib + "\" not found");
-                    foundAllLocs = false;
-                }
-            }
-
-            // The shaders have been copied into the program so we are now free to delete them
-            for (var shader of compiledShaders) {
-                gl.detachShader(this.program, shader);
-                gl.deleteShader(shader);
-            }
-
-            if (!foundAllLocs) {
-                gl.deleteProgram(this.program);
-                this.program = null;
-            }
+            gl.attachShader(program, shader);
+            compiledShaders.push(shader);
         }
     }
 
-    get compiled() {
-        return this.program != null;
+    gl.linkProgram(program);
+    if (compiledShaders.length != shaders.length || !gl.getProgramParameter(program, gl.LINK_STATUS)) {
+        // Failed to compile some shaders and/or failed to link program
+        // Make sure to clean everything up
+        gl.deleteProgram(program);
+        for (var shader of compiledShaders) gl.deleteShader(shader);
+        program = null;
+    } else {
+        var foundAllLocs = true;
+
+        // Cache uniform locations
+        for (var uniform of uniforms) {
+            if ((uniformLocs[uniform] = gl.getUniformLocation(program, uniform)) == null) {
+                // Uniform could not be located
+                console.log(name + ":ERROR: uniform \"" + uniform + "\" not found");
+                foundAllLocs = false;
+            }
+        }
+
+        // Cache attribute locations
+        for (var attrib of attribs) {
+            if ((attribLocs[attrib] = gl.getAttribLocation(program, attrib)) < 0) {
+                // Attribute could not be located
+                console.log(name + ":ERROR: attribute \"" + attrib + "\" not found");
+                foundAllLocs = false;
+            }
+        }
+
+        // The shaders have been copied into the program so we are now free to delete them
+        for (var shader of compiledShaders) {
+            gl.detachShader(program, shader);
+            gl.deleteShader(shader);
+        }
+
+        if (!foundAllLocs) {
+            gl.deleteProgram(program);
+            program = null;
+        }
     }
 
-    use() {
-        this.context.useProgram(this.program);
-    }
-
-    delete() {
-        this.context.deleteProgram(this.program);
-    }
+    return {
+        handle: program,
+        uniforms: uniformLocs,
+        attribs: attribLocs
+    };
 }
 
 function createBuffer(gl, target, data, usage) {
@@ -187,14 +197,19 @@ function createBuffer(gl, target, data, usage) {
 }
 
 window.addEventListener("load", async function main() {
-    var canvas = document.querySelector("canvas");
-    var gl = canvas.getContext("webgl");
+    canvas = document.querySelector("canvas");
+    gl = canvas.getContext("webgl");
     if (!gl) {
         alert("No WebGL for you :(");
         return;
     }
 
-    var [
+    var nodeDrawingVertShader;
+    var nodeDrawingFragShader;
+    var edgeDrawingVertShader;
+    var edgeDrawingFragShader;
+
+    [
         shaderInfo,
         shaderLinks,
         nodeDrawingVertShader,
@@ -210,7 +225,7 @@ window.addEventListener("load", async function main() {
         fetch("edge.fs").then((response) => response.text())
     ]);
 
-    var nodeDrawingProgram = new ShaderProgram(
+    nodeDrawingProgram = compileProgram(
         gl, "NodeDrawingProgram", [
             {
                 name: "VertexShader",
@@ -233,7 +248,7 @@ window.addEventListener("load", async function main() {
         ]
     );
 
-    var edgeDrawingProgram = new ShaderProgram(
+    edgeDrawingProgram = compileProgram(
         gl, "EdgeDrawingProgram", [
             {
                 name: "VertexShader",
@@ -259,17 +274,34 @@ window.addEventListener("load", async function main() {
         ]
     );
 
-    if (!(nodeDrawingProgram.compiled && edgeDrawingProgram.compiled)) {
-        nodeDrawingProgram.delete();
-        edgeDrawingProgram.delete();
+    if (!(nodeDrawingProgram.handle && edgeDrawingProgram.handle)) {
+        gl.deleteProgram(nodeDrawingProgram.handle);
+        gl.deleteProgram(edgeDrawingProgram.handle);
         console.log("fatal: failed to compile shaders");
         alert("Something went wrong :(");
         return;
     }
 
-    //unsigned int nodeVertexBuffer = createBuffer(GL_ARRAY_BUFFER, sizeof(nodeVertices), nodeVertices, GL_STATIC_DRAW);
-    //unsigned int nodePositionBuffer = createBuffer(GL_ARRAY_BUFFER, numNodes * 2 * sizeof(float), nodePositions, GL_DYNAMIC_DRAW);
-    //unsigned int nodeColorBuffer = createBuffer(GL_ARRAY_BUFFER, numNodes * 3 * sizeof(float), nodeColors, GL_STATIC_DRAW);
-    //unsigned int edgeVertexBuffer = createBuffer(GL_ARRAY_BUFFER, sizeof(edgeVertices), edgeVertices, GL_STATIC_DRAW);
-    //unsigned int edgePositionBuffer = createBuffer(GL_ARRAY_BUFFER, numEdges * 4 * sizeof(float), NULL, GL_DYNAMIC_DRAW);
+    nodeGeometryBuffer = createBuffer(gl, gl.ARRAY_BUFFER, nodeGeometry, gl.STATIC_DRAW);
+    edgeGeometryBuffer = createBuffer(gl, gl.ARRAY_BUFFER, edgeGeometry, gl.STATIC_DRAW);
+
+    layoutProcessor = new Worker("layout.js");
+    layoutProcessor.onmessage = function(event) {
+        var result = event.data;
+        if (result.type == RES_INITIAL_LAYOUT) {
+            nodePositionBuffer = createBuffer(gl, gl.ARRAY_BUFFER, result.nodePositions, gl.DYNAMIC_DRAW);
+            nodeColorBuffer = createBuffer(gl, gl.ARRAY_BUFFER, result.nodeColors, gl.STATIC_DRAW);
+            edgePositionBuffer = createBuffer(gl, gl.ARRAY_BUFFER, result.edgePositions, gl.DYNAMIC_DRAW);
+            ///setupGuiCallbacks();
+            ///renderLoop();
+        } else if (result.type == RES_UPDATED_LAYOUT) {
+            ///glBufferSubData()
+        }
+    };
+
+    layoutProcessor.postMessage({
+        type: CMD_INITIALIZE_LAYOUT,
+        info: shaderInfo,
+        links: shaderLinks
+    });
 });
