@@ -1,13 +1,8 @@
 // Value between 0 and 1 that controls zoom speed
 // Smaller -> faster, bigger -> slower
-const ZOOM_SCALE_FACTOR = 0.99;
+const ZOOM_SCALE_FACTOR = 0.98;
 
-// Graph layout settings
-const NODE_POOL_RADIUS = 100.0;
-const NODE_CLUSTER_SPREAD = 0.75;
-const START_EDGE_LENGTH = 0.5935;
-
-// Uniforms to play around with
+// Display options to play around with
 const NODE_SIZE = 0.04;
 const EDGE_WIDTH = 0.005;
 const EDGE_HEAD_WIDTH = 0.015;
@@ -21,6 +16,7 @@ const RES_INITIAL_LAYOUT = 0;
 const RES_UPDATED_LAYOUT = 1;
 
 // Node mesh vertices
+const numNodeVertices = 64;
 const nodeGeometry = new Float32Array([
      0.000000,  0.000000,
      1.000000,  0.000000,
@@ -89,6 +85,7 @@ const nodeGeometry = new Float32Array([
 ]);
 
 // Edge mesh vertices
+const numEdgeVertices = 9;
 const edgeGeometry = new Float32Array([
     -1.00,  0.50,
     -1.00, -0.50,
@@ -105,6 +102,8 @@ const edgeGeometry = new Float32Array([
 var mouseIsDragging = false;
 var dragStartX = 0.0;
 var dragStartY = 0.0;
+var mouseX = 0.0;
+var mouseY = 0.0;
 var graphOldPosX = 0.0;
 var graphOldPosY = 0.0;
 var graphPosX = 0.0;
@@ -112,9 +111,12 @@ var graphPosY = 0.0;
 var graphScale = 1.0;
 
 var canvas, gl; // Canvas element and WebGL context
+var aspectRatio = 1.0, invAspectRatio = 1.0;
 var shaderInfo, shaderLinks; // Shader JSON data
-var nodeDrawingProgram, edgeDrawingProgram; // Compiled GLSL programs
+var graphEdgeCount = 0; // Number of edges in the graph
+var nodeRenderer, edgeRenderer; // Compiled GLSL programs
 var layoutProcessor; // Graph layout processing WebWorker
+var instancedArraysExt; // ANGLE_instanced_arrays extension
 
 var nodeGeometryBuffer;
 var nodePositionBuffer;
@@ -196,6 +198,138 @@ function createBuffer(gl, target, data, usage) {
     return buffer;
 }
 
+function handleResize(event) {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    aspectRatio = canvas.width / canvas.height;
+    invAspectRatio = canvas.height / canvas.width;
+    gl.viewport(0, 0, canvas.width, canvas.height);
+}
+
+function handleMouseMove(event) {
+    mouseX = event.x;
+    mouseY = event.y;
+    if (mouseIsDragging) {
+        graphPosX = graphOldPosX + (event.x - dragStartX) / canvas.height * 2 / graphScale;
+        graphPosY = graphOldPosY - (event.y - dragStartY) / canvas.height * 2 / graphScale;
+    }
+}
+
+function handleMouseDown(event) {
+    mouseIsDragging = true;
+    dragStartX = event.x;
+    dragStartY = event.y;
+    graphOldPosX = graphPosX;
+    graphOldPosY = graphPosY;
+}
+
+function handleMouseUp(event) {
+    handleMouseMove(event);
+    mouseIsDragging = false;
+}
+
+function handleScroll(event) {
+    // Calculate zoom factor
+    var scrollDelta = Math.sign(event.deltaY);
+    var zoom = Math.pow(ZOOM_SCALE_FACTOR, scrollDelta);
+
+    // Normalize mouse coordinates
+    var mouseNormX = mouseX / canvas.width * 2 - 1;
+    var mouseNormY = mouseY / canvas.height * 2 - 1;
+    mouseNormX *= aspectRatio; // Aspect correction
+
+    // Update graph position and scale
+    graphScale *= zoom;
+    graphPosX += mouseNormX * (1 - zoom) / graphScale;
+    graphPosY -= mouseNormY * (1 - zoom) / graphScale;
+}
+
+function initializeLayout(result) {
+    nodePositionBuffer = createBuffer(gl, gl.ARRAY_BUFFER, result.nodePositions, gl.DYNAMIC_DRAW);
+    nodeColorBuffer = createBuffer(gl, gl.ARRAY_BUFFER, result.nodeColors, gl.STATIC_DRAW);
+    edgePositionBuffer = createBuffer(gl, gl.ARRAY_BUFFER, result.edgePositions, gl.DYNAMIC_DRAW);
+    graphEdgeCount = result.edgePositions.length / 4;
+}
+
+function updateLayout(result) {
+    gl.bindBuffer(gl.ARRAY_BUFFER, nodePositionBuffer);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, result.nodePositions);
+    gl.bindBuffer(gl.ARRAY_BUFFER, edgePositionBuffer);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, result.edgePositions);
+}
+
+function setupGuiCallbacks() {
+    window.addEventListener("resize", handleResize);
+    window.addEventListener("mousemove", handleMouseMove);///
+    window.addEventListener("mousedown", handleMouseDown);
+    window.addEventListener("mouseup", handleMouseUp);
+    window.addEventListener("wheel", handleScroll);
+}
+
+function renderLoop() {
+    gl.clear(gl.COLOR_BUFFER_BIT);
+
+    var program;
+    var uniforms;
+    var attribs;
+
+    // Render edges
+    program = edgeRenderer.handle;
+    uniforms = edgeRenderer.uniforms;
+    attribs = edgeRenderer.attribs;
+
+    gl.useProgram(program);
+    gl.uniform1f(uniforms.invAspectRatio, invAspectRatio);
+    gl.uniform2f(uniforms.graphPos, graphPosX, graphPosY);
+    gl.uniform1f(uniforms.graphScale, graphScale);
+    gl.uniform1f(uniforms.edgeWidth, EDGE_WIDTH);
+    gl.uniform1f(uniforms.headWidth, EDGE_HEAD_WIDTH);
+    gl.uniform1f(uniforms.headLength, EDGE_HEAD_LENGTH);
+    gl.uniform1f(uniforms.targetNodeSize, NODE_SIZE);
+    gl.uniform3f(uniforms.edgeColor, EDGE_COLOR[0], EDGE_COLOR[1], EDGE_COLOR[2]);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, edgeGeometryBuffer);
+    gl.enableVertexAttribArray(attribs.edgeVertex);
+    gl.vertexAttribPointer(attribs.edgeVertex, 2, gl.FLOAT, gl.FALSE, 0, 0);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, edgePositionBuffer);
+    gl.enableVertexAttribArray(attribs.edgePosition);
+    gl.vertexAttribPointer(attribs.edgePosition, 4, gl.FLOAT, gl.FALSE, 0, 0);
+    instancedArraysExt.vertexAttribDivisorANGLE(attribs.edgePosition, 1);
+
+    instancedArraysExt.drawArraysInstancedANGLE(gl.TRIANGLES, 0, numEdgeVertices, graphEdgeCount);
+
+    // Render nodes
+    program = nodeRenderer.handle;
+    uniforms = nodeRenderer.uniforms;
+    attribs = nodeRenderer.attribs;
+
+    gl.useProgram(program);
+    gl.uniform1f(uniforms.invAspectRatio, invAspectRatio);
+    gl.uniform2f(uniforms.graphPos, graphPosX, graphPosY);
+    gl.uniform1f(uniforms.graphScale, graphScale);
+    gl.uniform1f(uniforms.nodeSize, NODE_SIZE);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, nodeGeometryBuffer);
+    gl.enableVertexAttribArray(attribs.nodeVertex);
+    gl.vertexAttribPointer(attribs.nodeVertex, 2, gl.FLOAT, gl.FALSE, 0, 0);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, nodePositionBuffer);
+    gl.enableVertexAttribArray(attribs.nodePosition);
+    gl.vertexAttribPointer(attribs.nodePosition, 2, gl.FLOAT, gl.FALSE, 0, 0);
+    instancedArraysExt.vertexAttribDivisorANGLE(attribs.nodePosition, 1);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, nodeColorBuffer);
+    gl.enableVertexAttribArray(attribs.nodeColor);
+    gl.vertexAttribPointer(attribs.nodeColor, 3, gl.FLOAT, gl.FALSE, 0, 0);
+    instancedArraysExt.vertexAttribDivisorANGLE(attribs.nodeColor, 1);
+
+    instancedArraysExt.drawArraysInstancedANGLE(gl.TRIANGLE_FAN, 0, numNodeVertices, shaderInfo.length);
+
+    // Request next paint call
+    requestAnimationFrame(renderLoop);
+}
+
 window.addEventListener("load", async function main() {
     canvas = document.querySelector("canvas");
     gl = canvas.getContext("webgl");
@@ -203,6 +337,14 @@ window.addEventListener("load", async function main() {
         alert("No WebGL for you :(");
         return;
     }
+
+    if (!(instancedArraysExt = gl.getExtension("ANGLE_instanced_arrays"))) {
+        alert("Need ANGLE_instanced_arrays extension");
+        return;
+    }
+
+    handleResize(null);
+    gl.clearColor(0.0, 0.0, 0.0, 1.0);
 
     var nodeDrawingVertShader;
     var nodeDrawingFragShader;
@@ -225,8 +367,8 @@ window.addEventListener("load", async function main() {
         fetch("edge.fs").then((response) => response.text())
     ]);
 
-    nodeDrawingProgram = compileProgram(
-        gl, "NodeDrawingProgram", [
+    nodeRenderer = compileProgram(
+        gl, "NodeRenderer", [
             {
                 name: "VertexShader",
                 type: gl.VERTEX_SHADER,
@@ -248,8 +390,8 @@ window.addEventListener("load", async function main() {
         ]
     );
 
-    edgeDrawingProgram = compileProgram(
-        gl, "EdgeDrawingProgram", [
+    edgeRenderer = compileProgram(
+        gl, "EdgeRenderer", [
             {
                 name: "VertexShader",
                 type: gl.VERTEX_SHADER,
@@ -274,9 +416,9 @@ window.addEventListener("load", async function main() {
         ]
     );
 
-    if (!(nodeDrawingProgram.handle && edgeDrawingProgram.handle)) {
-        gl.deleteProgram(nodeDrawingProgram.handle);
-        gl.deleteProgram(edgeDrawingProgram.handle);
+    if (!(nodeRenderer.handle && edgeRenderer.handle)) {
+        gl.deleteProgram(nodeRenderer.handle);
+        gl.deleteProgram(edgeRenderer.handle);
         console.log("fatal: failed to compile shaders");
         alert("Something went wrong :(");
         return;
@@ -289,19 +431,18 @@ window.addEventListener("load", async function main() {
     layoutProcessor.onmessage = function(event) {
         var result = event.data;
         if (result.type == RES_INITIAL_LAYOUT) {
-            nodePositionBuffer = createBuffer(gl, gl.ARRAY_BUFFER, result.nodePositions, gl.DYNAMIC_DRAW);
-            nodeColorBuffer = createBuffer(gl, gl.ARRAY_BUFFER, result.nodeColors, gl.STATIC_DRAW);
-            edgePositionBuffer = createBuffer(gl, gl.ARRAY_BUFFER, result.edgePositions, gl.DYNAMIC_DRAW);
-            ///setupGuiCallbacks();
-            ///renderLoop();
+            initializeLayout(result);
+            setupGuiCallbacks();
+            requestAnimationFrame(renderLoop);
+            ///postMessage({type: CMD_OPTIMIZE_LAYOUT, /**/});
         } else if (result.type == RES_UPDATED_LAYOUT) {
-            ///glBufferSubData()
+            updateLayout(result);
         }
     };
 
     layoutProcessor.postMessage({
         type: CMD_INITIALIZE_LAYOUT,
-        info: shaderInfo,
-        links: shaderLinks
+        shaderInfo: shaderInfo,
+        shaderLinks: shaderLinks
     });
 });
