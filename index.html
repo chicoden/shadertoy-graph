@@ -2,15 +2,27 @@
 <html lang="en">
     <head>
         <title>Shadertoy Graph</title>
+        <link rel="stylesheet" href="style.css">
         <meta charset="utf-8">
     </head>
     <body>
         <h1>Shadertoy Graph</h1>
+
         <p>
             This project is a collection of visualizations of miscellaneous shadertoy
             data. Current focus is on rendering a directed graph of shader forks but in
             the future I plan to add a histogram of shadertoy development over time and
             user statistics as well as rendering archived shaders.
         </p>
+
+        <div class="container">
+            <a href="/fork-tree/index.html" class="showcase">
+                <img src="/assets/fork-tree.png" alt="fork-tree">
+                <h3>Fork Tree</h3>
+                <p>
+                    A directed graph of all shadertoy shaders and their forks (as of July 12, 2024).
+                </p>
+            </a>
+        </div>
     </body>
 </html>

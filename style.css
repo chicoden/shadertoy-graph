@@ -1,0 +1,30 @@
+@font-face {
+    font-family: "Montserrat-Light";
+    src: url(/assets/Montserrat-Light.ttf);
+}
+
+body {
+    font-family: "Montserrat-Light";
+    color: white;
+    background: black;
+}
+
+.showcase {
+    color: white;
+    text-decoration: none;
+}
+
+.showcase > img {
+    width: 360px;
+    border: 0;
+    padding: 2px;
+}
+
+.showcase > img:hover {
+    padding: 0;
+    border: 2px solid white;
+}
+
+.showcase > h3:hover, .showcase > p:hover {
+    text-decoration: underline;
+}

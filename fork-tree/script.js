@@ -102,8 +102,6 @@ const edgeGeometry = new Float32Array([
 var mouseIsDragging = false;
 var dragStartX = 0.0;
 var dragStartY = 0.0;
-var mouseX = 0.0;
-var mouseY = 0.0;
 var graphOldPosX = 0.0;
 var graphOldPosY = 0.0;
 var graphPosX = 0.0;
@@ -117,6 +115,7 @@ var graphEdgeCount = 0; // Number of edges in the graph
 var nodeRenderer, edgeRenderer; // Compiled GLSL programs
 var layoutProcessor; // Graph layout processing WebWorker
 var instancedArraysExt; // ANGLE_instanced_arrays extension
+var stats; // MrDoob stats pannel
 
 var nodeGeometryBuffer;
 var nodePositionBuffer;
@@ -207,8 +206,6 @@ function handleResize(event) {
 }
 
 function handleMouseMove(event) {
-    mouseX = event.x;
-    mouseY = event.y;
     if (mouseIsDragging) {
         graphPosX = graphOldPosX + (event.x - dragStartX) / canvas.height * 2 / graphScale;
         graphPosY = graphOldPosY - (event.y - dragStartY) / canvas.height * 2 / graphScale;
@@ -234,8 +231,8 @@ function handleScroll(event) {
     var zoom = Math.pow(ZOOM_SCALE_FACTOR, scrollDelta);
 
     // Normalize mouse coordinates
-    var mouseNormX = mouseX / canvas.width * 2 - 1;
-    var mouseNormY = mouseY / canvas.height * 2 - 1;
+    var mouseNormX = event.x / canvas.width * 2 - 1;
+    var mouseNormY = event.y / canvas.height * 2 - 1;
     mouseNormX *= aspectRatio; // Aspect correction
 
     // Update graph position and scale
@@ -260,13 +257,14 @@ function updateLayout(result) {
 
 function setupGuiCallbacks() {
     window.addEventListener("resize", handleResize);
-    window.addEventListener("mousemove", handleMouseMove);///
-    window.addEventListener("mousedown", handleMouseDown);
-    window.addEventListener("mouseup", handleMouseUp);
+    window.addEventListener("pointermove", handleMouseMove);
+    window.addEventListener("pointerdown", handleMouseDown);
+    window.addEventListener("pointerup", handleMouseUp);
     window.addEventListener("wheel", handleScroll);
 }
 
 function renderLoop() {
+    stats.begin();
     gl.clear(gl.COLOR_BUFFER_BIT);
 
     var program;
@@ -326,13 +324,13 @@ function renderLoop() {
 
     instancedArraysExt.drawArraysInstancedANGLE(gl.TRIANGLE_FAN, 0, numNodeVertices, shaderInfo.length);
 
-    // Request next paint call
+    stats.end();
     requestAnimationFrame(renderLoop);
 }
 
 window.addEventListener("load", async function main() {
     canvas = document.querySelector("canvas");
-    gl = canvas.getContext("webgl");
+    gl = canvas.getContext("webgl", {antialias: true});
     if (!gl) {
         alert("No WebGL for you :(");
         return;
@@ -359,8 +357,8 @@ window.addEventListener("load", async function main() {
         edgeDrawingVertShader,
         edgeDrawingFragShader
     ] = await Promise.all([
-        fetch("../starch_summary.json").then((response) => response.json()),
-        fetch("../starch_links.json").then((response) => response.json()),
+        fetch("/assets/starch_summary.json").then((response) => response.json()),
+        fetch("/assets/starch_links.json").then((response) => response.json()),
         fetch("node.vs").then((response) => response.text()),
         fetch("node.fs").then((response) => response.text()),
         fetch("edge.vs").then((response) => response.text()),
@@ -439,6 +437,10 @@ window.addEventListener("load", async function main() {
             updateLayout(result);
         }
     };
+
+    stats = new Stats();
+    stats.showPanel(0); // 0: fps, 1: ms, 2: mb, 3+: custom
+    document.body.appendChild(stats.dom);
 
     layoutProcessor.postMessage({
         type: CMD_INITIALIZE_LAYOUT,
