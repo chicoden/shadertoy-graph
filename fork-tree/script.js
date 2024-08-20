@@ -357,8 +357,8 @@ window.addEventListener("load", async function main() {
         edgeDrawingVertShader,
         edgeDrawingFragShader
     ] = await Promise.all([
-        fetch("/assets/starch_summary.json").then((response) => response.json()),
-        fetch("/assets/starch_links.json").then((response) => response.json()),
+        fetch("../assets/starch_summary.json").then((response) => response.json()),
+        fetch("../assets/starch_links.json").then((response) => response.json()),
         fetch("node.vs").then((response) => response.text()),
         fetch("node.fs").then((response) => response.text()),
         fetch("edge.vs").then((response) => response.text()),
