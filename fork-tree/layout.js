@@ -9,11 +9,33 @@ const NODE_POOL_RADIUS = 100.0;
 const NODE_CLUSTER_SPREAD = 0.75;
 const START_EDGE_LENGTH = 0.5935;
 
+var shaderInfo;
+var shaderLinks;
+var numEdges;
+
 String.prototype.hashCode = function() {
     var hash = 0;
     for (var i = 0; i < this.length; i++) hash = (((hash << 5) - hash) + this.charCodeAt(i)) & 0xffffffff;
     return hash;
 };
+
+function generateEdgePositions(nodePositions) {
+    var edgePositions = new Float32Array(numEdges * 4);
+    var edgeOffs = 0;
+    for (var i = 0; i < shaderLinks.length; i++) {
+        var startNodeOffs = i * 2;
+        for (var j of shaderLinks[i].childIndices) {
+            var endNodeOffs = j * 2;
+            edgePositions[edgeOffs    ] = nodePositions[startNodeOffs    ];
+            edgePositions[edgeOffs + 1] = nodePositions[startNodeOffs + 1];
+            edgePositions[edgeOffs + 2] = nodePositions[  endNodeOffs    ];
+            edgePositions[edgeOffs + 3] = nodePositions[  endNodeOffs + 1];
+            edgeOffs += 4;
+        }
+    }
+
+    return edgePositions;
+}
 
 function generateSubLayout(nodePositions, links, nodeIndex, edgeAngle, edgeLength) {
     var nodeX = nodePositions[nodeIndex * 2    ];
@@ -27,8 +49,12 @@ function generateSubLayout(nodePositions, links, nodeIndex, edgeAngle, edgeLengt
 }
 
 function initializeLayout(command) {
-    var shaderInfo = command.shaderInfo;
-    var shaderLinks = command.shaderLinks;
+    shaderInfo = command.shaderInfo;
+    shaderLinks = command.shaderLinks;
+
+    // Precompute total number of edges
+    numEdges = 0;
+    for (var link of shaderLinks) numEdges += link.childIndices.length;
 
     // Generate random initial tree layouts
     var nodePositions = new Float32Array(shaderInfo.length * 2);
@@ -55,21 +81,8 @@ function initializeLayout(command) {
         nodeColors[i * 3 + 2] = (((creatorHash >> 24) & 0xff) ^ (creatorHash & 0xff)) / 255;
     }
 
-    // Copy node positions into an array of edge endpoint positions
-    var numEdges = 0;
-    for (var link of shaderLinks) numEdges += link.childIndices.length;
-    var edgePositions = new Float32Array(numEdges * 4);
-    var edgeOffs = 0;
-    for (var i = 0; i < shaderLinks.length; i++) {
-        var startNodeOffs = i * 2;
-        for (var j of shaderLinks[i].childIndices) {
-            var endNodeOffs = j * 2;
-            edgePositions[edgeOffs++] = nodePositions[startNodeOffs    ];
-            edgePositions[edgeOffs++] = nodePositions[startNodeOffs + 1];
-            edgePositions[edgeOffs++] = nodePositions[  endNodeOffs    ];
-            edgePositions[edgeOffs++] = nodePositions[  endNodeOffs + 1];
-        }
-    }
+    // Copy node positions into a buffer in pairs by edge
+    var edgePositions = generateEdgePositions(nodePositions);
 
     postMessage({
         type: RES_INITIAL_LAYOUT,
@@ -84,7 +97,7 @@ function initializeLayout(command) {
 }
 
 function optimizeLayout(command) {
-    ///
+    console.log("COMMAND:OPTIMIZE: [" + command.nodePositions.join(", ") + "]");
 }
 
 onmessage = function(event) {

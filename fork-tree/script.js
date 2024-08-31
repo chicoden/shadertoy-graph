@@ -432,7 +432,7 @@ window.addEventListener("load", async function main() {
             initializeLayout(result);
             setupGuiCallbacks();
             requestAnimationFrame(renderLoop);
-            ///postMessage({type: CMD_OPTIMIZE_LAYOUT, /**/});
+            layoutProcessor.postMessage({type: CMD_OPTIMIZE_LAYOUT, nodePositions: result.nodePositions}, [result.nodePositions.buffer]);
         } else if (result.type == RES_UPDATED_LAYOUT) {
             updateLayout(result);
         }
